@@ -1,0 +1,13 @@
+# Local builds and release artifacts (published manually in GitHub Releases).
+*.exe
+*.test
+/rmwm
+/rmwm-remove-ai-watermarks
+/linux-amd64/
+/bin/
+/dist/
+*.zip
+*.tar.gz
+*.tgz
+*.lnk
+.vscode/settings.json
