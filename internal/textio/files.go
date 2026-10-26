@@ -1,4 +1,4 @@
-package main
+package textio
 
 import (
 	"bytes"
@@ -12,35 +12,51 @@ import (
 	"unicode/utf8"
 )
 
-type textEncoding uint8
+type Encoding uint8
 
 const (
-	encodingUTF8 textEncoding = iota
-	encodingUTF8BOM
-	encodingUTF16LE
-	encodingUTF16BE
+	UTF8 Encoding = iota
+	UTF8BOM
+	UTF16LE
+	UTF16BE
 )
 
-func decodeText(data []byte) (string, textEncoding, error) {
-	encoding := encodingUTF8
+// ************************************************************************************************
+// decodeText validates both the encoding and the textual input policy.
+func DecodeText(data []byte) (string, Encoding, error) {
+	text, encoding, err := mk_decodeTextBytes(data)
+	if err != nil {
+		return "", encoding, err
+	}
+	if err = mk_validateText(text); err != nil {
+		return "", encoding, err
+	}
+	return text, encoding, nil
+}
+
+// ************************************************************************************************
+// decodeTextBytes decodes supported encodings without reapplying input policy
+// to already cleaned output (which may expose a container-like text prefix).
+func DecodeTextBytes(data []byte) (string, Encoding, error) {
+	encoding := UTF8
 	if bytes.HasPrefix(data, []byte{0xFF, 0xFE, 0, 0}) || bytes.HasPrefix(data, []byte{0, 0, 0xFE, 0xFF}) {
 		return "", encoding, errors.New("UTF-32 non pris en charge ; convertir en UTF-8")
 	}
 	switch {
 	case bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}):
-		encoding, data = encodingUTF8BOM, data[3:]
+		encoding, data = UTF8BOM, data[3:]
 	case bytes.HasPrefix(data, []byte{0xFF, 0xFE}):
-		encoding, data = encodingUTF16LE, data[2:]
+		encoding, data = UTF16LE, data[2:]
 	case bytes.HasPrefix(data, []byte{0xFE, 0xFF}):
-		encoding, data = encodingUTF16BE, data[2:]
+		encoding, data = UTF16BE, data[2:]
 	}
 	var text string
-	if encoding == encodingUTF16LE || encoding == encodingUTF16BE {
+	if encoding == UTF16LE || encoding == UTF16BE {
 		if len(data)%2 != 0 {
 			return "", encoding, errors.New("UTF-16 tronqué : nombre d'octets impair")
 		}
 		var order binary.ByteOrder = binary.LittleEndian
-		if encoding == encodingUTF16BE {
+		if encoding == UTF16BE {
 			order = binary.BigEndian
 		}
 		words := make([]uint16, len(data)/2)
@@ -65,13 +81,10 @@ func decodeText(data []byte) (string, textEncoding, error) {
 		}
 		text = string(data)
 	}
-	if err := validateText(text); err != nil {
-		return "", encoding, err
-	}
 	return text, encoding, nil
 }
 
-func validateText(text string) error {
+func ValidateText(text string) error {
 	// Some containers are ASCII-compatible; valid UTF-8 alone is insufficient.
 	for _, signature := range []string{"%PDF-", "PK\x03\x04", "PK\x05\x06", "PK\x07\x08", "GIF87a", "GIF89a", "RIFF", "\x89PNG\r\n\x1a\n"} {
 		if len(text) >= len(signature) && text[:len(signature)] == signature {
@@ -86,16 +99,16 @@ func validateText(text string) error {
 	return nil
 }
 
-func encodeText(text string, encoding textEncoding) []byte {
+func EncodeText(text string, encoding Encoding) []byte {
 	switch encoding {
-	case encodingUTF8BOM:
+	case UTF8BOM:
 		return append([]byte{0xEF, 0xBB, 0xBF}, []byte(text)...)
-	case encodingUTF16LE, encodingUTF16BE:
+	case UTF16LE, UTF16BE:
 		words := utf16.Encode([]rune(text))
 		out := make([]byte, 2+2*len(words))
 		var order binary.ByteOrder = binary.LittleEndian
 		out[0], out[1] = 0xFF, 0xFE
-		if encoding == encodingUTF16BE {
+		if encoding == UTF16BE {
 			order = binary.BigEndian
 			out[0], out[1] = 0xFE, 0xFF
 		}
@@ -108,7 +121,7 @@ func encodeText(text string, encoding textEncoding) []byte {
 	}
 }
 
-func readLimited(reader io.Reader, maximum int64) ([]byte, error) {
+func ReadLimited(reader io.Reader, maximum int64) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(reader, maximum+1))
 	if err != nil {
 		return nil, err
@@ -119,7 +132,7 @@ func readLimited(reader io.Reader, maximum int64) ([]byte, error) {
 	return data, nil
 }
 
-func writeAll(writer io.Writer, data []byte) error {
+func WriteAll(writer io.Writer, data []byte) error {
 	n, err := writer.Write(data)
 	if err != nil {
 		return err
@@ -130,14 +143,14 @@ func writeAll(writer io.Writer, data []byte) error {
 	return nil
 }
 
-type sourceSnapshot struct {
-	path string
-	info os.FileInfo
-	data []byte
+type SourceSnapshot struct {
+	Path string
+	Info os.FileInfo
+	Data []byte
 }
 
-func readSource(path string, maximum int64) (sourceSnapshot, error) {
-	var result sourceSnapshot
+func ReadSource(path string, maximum int64) (SourceSnapshot, error) {
+	var result SourceSnapshot
 	info, err := os.Lstat(path)
 	if err != nil {
 		return result, err
@@ -160,7 +173,7 @@ func readSource(path string, maximum int64) (sourceSnapshot, error) {
 	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
 		return result, errors.New("le fichier a changé pendant son ouverture")
 	}
-	data, err := readLimited(file, maximum)
+	data, err := ReadLimited(file, maximum)
 	if err != nil {
 		return result, err
 	}
@@ -171,16 +184,16 @@ func readSource(path string, maximum int64) (sourceSnapshot, error) {
 	if opened.Size() != after.Size() || !opened.ModTime().Equal(after.ModTime()) || int64(len(data)) != after.Size() {
 		return result, errors.New("le fichier a changé pendant la lecture")
 	}
-	return sourceSnapshot{path: path, info: after, data: data}, nil
+	return SourceSnapshot{Path: path, Info: after, Data: data}, nil
 }
 
-func sourceUnchanged(source sourceSnapshot) error {
-	current, err := readSource(source.path, int64(len(source.data))+1)
+func sourceUnchanged(source SourceSnapshot) error {
+	current, err := ReadSource(source.Path, int64(len(source.Data))+1)
 	if err != nil {
 		return fmt.Errorf("vérification avant écriture : %w", err)
 	}
-	if !os.SameFile(source.info, current.info) || !bytes.Equal(source.data, current.data) ||
-		!source.info.ModTime().Equal(current.info.ModTime()) || source.info.Mode() != current.info.Mode() {
+	if !os.SameFile(source.Info, current.Info) || !bytes.Equal(source.Data, current.Data) ||
+		!source.Info.ModTime().Equal(current.Info.ModTime()) || source.Info.Mode() != current.Info.Mode() {
 		return errors.New("le fichier a changé depuis sa lecture ; aucune substitution effectuée")
 	}
 	return nil
@@ -188,11 +201,11 @@ func sourceUnchanged(source sourceSnapshot) error {
 
 // New files and backups are created with O_EXCL. Existing files and symlinks
 // cannot be overwritten through either path.
-func writeNewFile(path string, data []byte, mode os.FileMode) (err error) {
-	return writeNewFileProtected(path, data, mode, "")
+func WriteNewFile(path string, data []byte, mode os.FileMode) (err error) {
+	return WriteNewFileProtected(path, data, mode, "")
 }
 
-func writeNewFileProtected(path string, data []byte, mode os.FileMode, sourcePath string) (err error) {
+func WriteNewFileProtected(path string, data []byte, mode os.FileMode, sourcePath string) (err error) {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return fmt.Errorf("création exclusive refusée (la sortie doit être absente) : %w", err)
@@ -214,7 +227,7 @@ func writeNewFileProtected(path string, data []byte, mode os.FileMode, sourcePat
 	if err = protectNewFile(file, sourcePath); err != nil {
 		return fmt.Errorf("protection de la nouvelle copie : %w", err)
 	}
-	if err = writeAll(file, data); err != nil {
+	if err = WriteAll(file, data); err != nil {
 		return err
 	}
 	if err = file.Chmod(mode.Perm()); err != nil {
@@ -230,13 +243,13 @@ func writeNewFileProtected(path string, data []byte, mode os.FileMode, sourcePat
 	return nil
 }
 
-func createBackup(source sourceSnapshot) (string, error) {
+func createBackup(source SourceSnapshot) (string, error) {
 	for i := 0; i < 10000; i++ {
-		path := source.path + ".bak"
+		path := source.Path + ".bak"
 		if i > 0 {
 			path += fmt.Sprintf(".%d", i)
 		}
-		err := writeNewFileProtected(path, source.data, source.info.Mode().Perm(), source.path)
+		err := WriteNewFileProtected(path, source.Data, source.Info.Mode().Perm(), source.Path)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
@@ -248,14 +261,14 @@ func createBackup(source sourceSnapshot) (string, error) {
 	return "", errors.New("trop de sauvegardes existantes (10000)")
 }
 
-func replaceSource(source sourceSnapshot, data []byte, backupEnabled bool) (backup, warning string, err error) {
-	if source.info.Mode().Perm()&0222 == 0 {
+func ReplaceSource(source SourceSnapshot, data []byte, backupEnabled bool) (backup, warning string, err error) {
+	if source.Info.Mode().Perm()&0222 == 0 {
 		return "", "", errors.New("fichier en lecture seule")
 	}
 	if err := sourceUnchanged(source); err != nil {
 		return "", "", err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(source.path), ".rmwm-*.tmp")
+	temporary, err := os.CreateTemp(filepath.Dir(source.Path), ".rmwm-*.tmp")
 	if err != nil {
 		return "", "", err
 	}
@@ -267,13 +280,13 @@ func replaceSource(source sourceSnapshot, data []byte, backupEnabled bool) (back
 			_ = os.Remove(name)
 		}
 	}()
-	if err := protectNewFile(temporary, source.path); err != nil {
+	if err := protectNewFile(temporary, source.Path); err != nil {
 		return "", "", fmt.Errorf("protection du fichier temporaire : %w", err)
 	}
-	if err := writeAll(temporary, data); err != nil {
+	if err := WriteAll(temporary, data); err != nil {
 		return "", "", err
 	}
-	if err := temporary.Chmod(source.info.Mode().Perm()); err != nil {
+	if err := temporary.Chmod(source.Info.Mode().Perm()); err != nil {
 		return "", "", err
 	}
 	if err := temporary.Sync(); err != nil {
@@ -294,7 +307,7 @@ func replaceSource(source sourceSnapshot, data []byte, backupEnabled bool) (back
 	if err := sourceUnchanged(source); err != nil {
 		return backup, "", err
 	}
-	warning, err = commitReplacement(name, source.path)
+	warning, err = commitReplacement(name, source.Path)
 	if err != nil {
 		// Retain the completed output on commit failure; never discard the only
 		// surviving copy after an unusual filesystem/Windows replacement error.

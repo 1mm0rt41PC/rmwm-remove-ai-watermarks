@@ -1,15 +1,18 @@
 package main
 
-import "testing"
+import (
+	rmwm "github.com/1mm0rt41PC/rmwm-remove-ai-watermarks"
+	"testing"
+)
 
 func TestMonitorWorkerOptionsRoundTripThroughCLI(t *testing.T) {
 	// Exercise the actual CLI parser, with an injected worker instead of Win32.
 	// Detaching must retain every cleaner option and the content/size policy.
 	for _, want := range []config{
-		{CleanOptions: CleanOptions{NormalizeSpaces: true, NormalizeDashes: true}, format: "auto", maxSizeMiB: 64},
-		{CleanOptions: CleanOptions{NormalizeSpaces: true, NormalizeDashes: false}, format: "text", maxSizeMiB: 64},
-		{CleanOptions: CleanOptions{NormalizeSpaces: false, NormalizeDashes: true}, format: "text", maxSizeMiB: 64},
-		{CleanOptions: CleanOptions{StripEmojiGlue: true, StripBidi: true, AggressiveHomoglyphs: true}, format: "json", maxSizeMiB: 7},
+		{CleanOptions: rmwm.CleanOptions{NormalizeSpaces: true, NormalizeDashes: true}, format: "auto", maxSizeMiB: 64},
+		{CleanOptions: rmwm.CleanOptions{NormalizeSpaces: true, NormalizeDashes: false}, format: "text", maxSizeMiB: 64},
+		{CleanOptions: rmwm.CleanOptions{NormalizeSpaces: false, NormalizeDashes: true}, format: "text", maxSizeMiB: 64},
+		{CleanOptions: rmwm.CleanOptions{StripEmojiGlue: true, StripBidi: true, AggressiveHomoglyphs: true}, format: "json", maxSizeMiB: 7},
 	} {
 		called := false
 		result := runClipboardTest(monitorWorkerArguments(want), clipboardOps{

@@ -3,7 +3,7 @@
 [![Go](https://img.shields.io/badge/Go-1.26.10%2B-blue.svg)](https://go.dev/dl/)
 [![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/1mm0rt41PC/rmwm-remove-ai-watermarks/releases)
 
-A local Go command-line tool for cleaning invisible and unusual Unicode characters from text files, JSON strings, standard input, and the clipboard.
+A local Go library and command-line tool for cleaning invisible and unusual Unicode characters from text files, JSON strings, standard input, and the clipboard.
 
 **Repository:** https://github.com/1mm0rt41PC/rmwm-remove-ai-watermarks
 
@@ -15,6 +15,7 @@ The executable is called **rmwm**. It has no external Go dependencies and makes 
 
 - [Download and installation](#download-and-installation)
 - [Usage](#usage)
+- [Go library](#go-library)
 - [Clipboard](#clipboard)
 - [Windows clipboard monitoring](#windows-clipboard-monitoring)
 - [Options and exit codes](#options-and-exit-codes)
@@ -107,6 +108,78 @@ PowerShell pipelines can decode and re-encode text before it reaches the program
 cmd /d /c 'rmwm - < "C:\my\dir\input.md" > "C:\my\dir\cleaned.md"'
 cmd /d /c 'rmwm -format=json - < "C:\my\dir\input.json" > "C:\my\dir\cleaned.json"'
 ```
+
+## Go library
+
+Import the repository root as package **rmwm**. The executable entry point is [cmd/rmwm/main.go](cmd/rmwm/main.go).
+
+### Package architecture
+
+- [export.go](export.go) is the only production Go file at the root: it aliases the public types, forwards the five public functions, and reexports the same sentinel errors. It contains no cleaning or I/O implementation. Public examples and facade smoke tests stay at the root.
+- [internal/cleaner](internal/cleaner) owns the reader APIs, Unicode/JSON rules, implementation tests, and test helpers. It depends on shared text I/O, never on the root facade or command. It has no filesystem monitoring, command parser, command configuration, terminal reporting, clipboard backend, or background clipboard worker.
+- [cmd/rmwm](cmd/rmwm) owns the complete CLI and its tests, including file/stream commands, flags, exit codes, reports, clipboard access, and Windows background UI. It imports the root library; the library never imports the command.
+- [internal/textio](internal/textio) is the single shared implementation of encoding/BOM handling, textual-input validation, bounded reads, complete writes, snapshots, exclusive backups, protected copies, platform replacement, and directory filters. Its encoded-document helper receives the library cleaners as callbacks, so it does not import the root library and cannot create an import cycle.
+
+Command behavior is not a public library API. Use the reader APIs below from Go, or invoke the executable for one-shot file/directory cleanup and other command-line behavior. Only the clipboard supports monitoring, through the Windows CLI. Library and CLI defaults remain independent.
+
+```sh
+go get github.com/1mm0rt41PC/rmwm-remove-ai-watermarks
+```
+
+### Clean, detect, and preview streams
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "strings"
+
+    rmwm "github.com/1mm0rt41PC/rmwm-remove-ai-watermarks"
+)
+
+func main() {
+    input := "Hello\u200b world—again\n"
+    options := rmwm.Opt{NormalizeSpaces: true, NormalizeDashes: true}
+    found, err := rmwm.HasWatermarks(strings.NewReader(input), options)
+    if err != nil { panic(err) }
+    fmt.Println("Cleanup needed:", found)
+
+    changes, err := rmwm.RunDry(strings.NewReader(input), options)
+    if err != nil { panic(err) }
+    for _, change := range changes { fmt.Printf("%s\n", change) }
+
+    var output bytes.Buffer
+    if err := rmwm.CleanupWatermarks(strings.NewReader(input), &output, options); err != nil {
+        panic(err)
+    }
+    fmt.Print(output.String())
+}
+```
+
+Each call consumes its reader without closing it. Detection means that the selected cleanup rules would change the bytes, **not** that AI authorship or a watermark has been proven. Encoding and BOM handling are the same as for files. Automatic stream format is always text; explicitly select JSON to interpret escaped Unicode.
+
+The reader APIs read and validate the complete input before returning changes or writing output. Invalid encoding, invalid JSON, duplicate keys (including cleanup collisions), and read failures produce no partial cleaned output. Write failures and short writes are returned, but an arbitrary writer may already have accepted bytes; the library cannot roll those back. Use a separate output buffer or file when transactional output is needed. Reader APIs do not close or flush the caller's streams and have no implicit size limit.
+
+### Dry-run parts
+
+[RunDry](export.go:38) returns only changed physical lines, in input order, each encoded as `before\n---\nafter`. Cleaning and validation happen on the whole document first, preserving context-sensitive Unicode rules. Lines are paired by their original position, not by a diff algorithm, so repeated lines and lines that become empty stay aligned. The separating LF is excluded from each line; CR from a CRLF line is retained. A final LF does not add a spurious change. Previews are decoded Unicode strings without the encoding BOM, even for UTF-16 input.
+
+For JSON, these are **serialized document lines**, not individual decoded keys or values. A changed JSON string may have different escape spelling. Unchanged lines are omitted; clean input returns no parts. The delimiter is a display convention, not a reversible patch format or a unique separator for arbitrary input.
+
+### Library options
+
+All fields belong to [Opt](export.go:13). Unlike CLI defaults, **every boolean defaults to false**.
+
+| Field | Meaning / zero value |
+| --- | --- |
+| Format | Empty or `auto`: streams are text; also accepts `text` and `json` |
+| NormalizeSpaces | Normalize unusual spaces |
+| NormalizeDashes | Normalize the three supported em-dash variants |
+| StripBidi | Remove otherwise-preserved bidi controls |
+| StripEmojiGlue | Remove otherwise-preserved emoji/script glue |
+| NormalizeHomoglyphs | Enable the existing aggressive homoglyph mapping |
 
 ## Clipboard
 
@@ -217,7 +290,7 @@ Statistics include scanned, changed, written, and skipped inputs; removed/replac
 
 Context-sensitive rules remove isolated zero-width spaces, soft hyphens, selected directional controls, orphan tags, noncharacters, reserved ignorables, and private-use characters. Recognized emoji joins, useful script-specific invisible characters, flag sequences, and supported legitimate bidirectional controls are preserved by default.
 
-Unusual Unicode spaces, including nonbreaking and narrow nonbreaking spaces, become ordinary spaces by default. Version 0.3.0 also normalizes each of these characters to **one ASCII hyphen**:
+In the CLI, unusual Unicode spaces, including nonbreaking and narrow nonbreaking spaces, become ordinary spaces by default. Library booleans are explicit and default to false. Version 0.3.0 also supports normalizing each of these characters to **one ASCII hyphen**:
 
 | Character | Code point | Replacement |
 | --- | --- | --- |
@@ -263,7 +336,7 @@ Supported encodings are UTF-8 with or without BOM and UTF-16 LE/BE with BOM. Enc
 
 Invalid encodings, BOM-less UTF-16, UTF-32, recognized binary container signatures, NUL/DEL, and C0 controls other than tab, LF, CR, and FF are rejected. Convert legacy encodings such as Windows-1252 explicitly before processing; no lossy decoding is attempted.
 
-The default limit is **64 MiB per file, stream, or clipboard text**. Each input is loaded in full, so conversion can use more memory than its input size. This is not a constant-memory streaming filter; long lines are not subject to a 64 KiB line limit.
+The CLI default limit is **64 MiB per file, stream, or clipboard text**. Library reader APIs have no implicit size limit. Each input is loaded in full, so conversion can use more memory than its input size. This is not a constant-memory streaming filter; long lines are not subject to a 64 KiB line limit.
 
 ## Build and test
 
@@ -279,19 +352,19 @@ go vet ./...
 Build on Windows:
 
 ```powershell
-go build -trimpath -ldflags="-s -w" -o rmwm.exe .
+go build -trimpath -ldflags="-s -w" -o rmwm.exe ./cmd/rmwm
 ```
 
 Build on Linux/macOS:
 
 ```sh
-go build -trimpath -ldflags='-s -w' -o rmwm .
+go build -trimpath -ldflags='-s -w' -o rmwm ./cmd/rmwm
 ```
 
 Cross-compile Windows x64 from Linux/macOS:
 
 ```sh
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o rmwm.exe .
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o rmwm.exe ./cmd/rmwm
 ```
 
 Explicit output names keep the command named rmwm despite the longer repository name. Local executables and release output directories are ignored by Git. Maintainers upload binaries manually to [Releases](https://github.com/1mm0rt41PC/rmwm-remove-ai-watermarks/releases), never to the source tree.
@@ -300,20 +373,33 @@ Tests cover CLI behavior, Unicode cleanup, JSON preservation, backups, and clipb
 
 ## Source reference
 
-This repository builds an executable, not an importable Go library. Its exported production declarations are:
+The root is an importable Go library; [cmd/rmwm/main.go](cmd/rmwm/main.go) is the executable entry point. Exported production declarations are indexed below.
 
 | Declaration | Purpose |
 | --- | --- |
-| [CleanOptions](unicode.go:17) | Space/dash normalization and opt-in bidi, emoji-glue, and homoglyph settings |
-| [CleanStats](unicode.go:26) | Counts removed and replaced Unicode code points, not bytes |
-| [CleanText](unicode.go:38) | Apply context-sensitive Unicode cleanup to text |
-| [CleanJSON](json.go:20) | Clean JSON keys and strings while preserving unchanged lexical content |
+| [Opt](export.go:13) | Alias of the internal stream cleanup options; fields listed above |
+| [RunDry](export.go:38) | Read and validate input, returning changed line pairs without writing |
+| [HasWatermarks](export.go:45) | Report whether the selected cleanup changes input |
+| [CleanupWatermarks](export.go:53) | Validate and clean a reader into a writer, preserving encoding |
+| [CleanOptions](export.go:18) | Alias of the low-level Unicode cleanup settings |
+| [CleanStats](export.go:22) | Alias of the Unicode code-point counters, not byte counts |
+| [CleanText](export.go:63) | Apply context-sensitive Unicode cleanup to text |
+| [CleanJSON](export.go:75) | Clean JSON keys and strings while preserving unchanged lexical content |
 
-There are no exported production variables or constants.
+Low-level [CleanText](export.go:63) expects valid UTF-8 and does not perform file encoding/container validation. [CleanStats](export.go:22) exposes Removed, Replaced, InputRunes, and OutputRunes counters. [CleanOptions](export.go:18) exposes NormalizeSpaces, NormalizeDashes, StripEmojiGlue, StripBidi, and AggressiveHomoglyphs; all default to false.
+
+Exported sentinel error variables in [export.go](export.go) retain the internal errors' identity for standard error matching:
+
+| Variable | Meaning |
+| --- | --- |
+| [ErrNilArgument](export.go:28) | Nil reader or writer |
+| [ErrInvalidFormat](export.go:31) | Unsupported format |
+
+Other I/O and validation errors are returned as well; not every error has a sentinel. There are no exported production constants. Reader APIs validate the format and apply the selected cleanup rules. The module remains standard-library-only, so it does not depend on the private logging library used by other projects.
 
 ## Origin and limitations
 
-The Unicode engine is derived from the MIT-licensed [watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover), specifically its [Unicode cleaning implementation](https://github.com/guillaumemeyer/watermarks-remover/blob/980c0b4c5786ca710ed77276b6e55b622f340d4c/service/scripts/text_unicode.py) at revision 980c0b4c5786ca710ed77276b6e55b622f340d4c. Upstream attribution is retained in [unicode.go](unicode.go:1).
+The Unicode engine is derived from the MIT-licensed [watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover), specifically its [Unicode cleaning implementation](https://github.com/guillaumemeyer/watermarks-remover/blob/980c0b4c5786ca710ed77276b6e55b622f340d4c/service/scripts/text_unicode.py) at revision 980c0b4c5786ca710ed77276b6e55b622f340d4c. Upstream attribution is retained in [internal/cleaner/unicode.go](internal/cleaner/unicode.go:1).
 
 File/directory/stdin/clipboard interfaces, Windows monitoring, lexical JSON processing, and dash normalization are specific to this Go port. Upstream NFKC normalization is omitted to avoid external dependencies. Isolated Mongolian variation selectors are intentionally removed in one pass; legitimate reference sequences remain preserved.
 

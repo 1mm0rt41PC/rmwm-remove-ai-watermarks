@@ -4,7 +4,7 @@
 // Reference commit: 980c0b4c5786ca710ed77276b6e55b622f340d4c.
 // See LICENSE for the upstream copyright and permission notice.
 
-package main
+package cleaner
 
 import (
 	"strings"

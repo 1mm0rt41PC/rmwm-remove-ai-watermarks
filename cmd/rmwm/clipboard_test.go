@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	rmwm "github.com/1mm0rt41PC/rmwm-remove-ai-watermarks"
 )
 
 func runClipboardTest(args []string, ops clipboardOps) rmwmTestResult {
@@ -238,7 +240,7 @@ func TestBackgroundStartFailureIsNotReportedAsSuccess(t *testing.T) {
 }
 
 func TestClipboardLeadingFEFFIsTextAndIsCleaned(t *testing.T) {
-	cfg := config{CleanOptions: CleanOptions{NormalizeSpaces: true}, format: "auto", maxBytes: 1024}
+	cfg := config{CleanOptions: rmwm.CleanOptions{NormalizeSpaces: true}, format: "auto", maxBytes: 1024}
 	cleaned, stats, err := cleanClipboardText(cfg, "\uFEFFBonjour\r\n")
 	if err != nil || cleaned != "Bonjour\r\n" || stats.Removed != 1 {
 		t.Fatalf("clipboard FEFF treated as a file BOM: cleaned=%q stats=%+v err=%v", cleaned, stats, err)

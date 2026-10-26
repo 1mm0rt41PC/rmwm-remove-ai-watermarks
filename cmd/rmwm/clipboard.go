@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"unicode/utf8"
+
+	rmwm "github.com/1mm0rt41PC/rmwm-remove-ai-watermarks"
+	"github.com/1mm0rt41PC/rmwm-remove-ai-watermarks/internal/textio"
 )
 
 // A snapshot identifies what was checked. Windows also checks the sequence
@@ -43,26 +46,26 @@ func systemClipboardOps() clipboardOps {
 // Clipboard text is already Unicode, not an encoded file: a leading U+FEFF
 // is a text character here, not an encoding marker to preserve. The cleaner
 // and options are otherwise exactly those used by -check and the file CLI.
-func cleanClipboardText(cfg config, text string) (string, CleanStats, error) {
+func cleanClipboardText(cfg config, text string) (string, rmwm.CleanStats, error) {
 	if int64(len(text)) > cfg.maxBytes {
-		return "", CleanStats{}, fmt.Errorf("presse-papiers supérieur à la limite de %d octets (-max-size)", cfg.maxBytes)
+		return "", rmwm.CleanStats{}, fmt.Errorf("presse-papiers supérieur à la limite de %d octets (-max-size)", cfg.maxBytes)
 	}
 	if !utf8.ValidString(text) {
-		return "", CleanStats{}, errors.New("texte du presse-papiers non UTF-8 valide")
+		return "", rmwm.CleanStats{}, errors.New("texte du presse-papiers non UTF-8 valide")
 	}
-	if err := validateText(text); err != nil {
-		return "", CleanStats{}, err
+	if err := textio.ValidateText(text); err != nil {
+		return "", rmwm.CleanStats{}, err
 	}
 	if cfg.format == "json" {
-		cleaned, stats, err := CleanJSON(text, cfg.CleanOptions)
+		cleaned, stats, err := rmwm.CleanJSON(text, cfg.CleanOptions)
 		if err != nil {
 			// JSON errors can contain object keys. Clipboard diagnostics must
 			// not repeat any copied content in a terminal or native popup.
-			return "", CleanStats{}, errors.New("JSON du presse-papiers invalide, chaînes Unicode invalides ou clés dupliquées après nettoyage ; contenu conservé")
+			return "", rmwm.CleanStats{}, errors.New("JSON du presse-papiers invalide, chaînes Unicode invalides ou clés dupliquées après nettoyage ; contenu conservé")
 		}
 		return cleaned, stats, nil
 	}
-	cleaned, stats := CleanText(text, cfg.CleanOptions)
+	cleaned, stats := rmwm.CleanText(text, cfg.CleanOptions)
 	return cleaned, stats, nil
 }
 

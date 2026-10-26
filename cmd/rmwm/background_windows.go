@@ -11,12 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
+
+	rmwm "github.com/1mm0rt41PC/rmwm-remove-ai-watermarks"
 )
 
 const (
@@ -345,7 +348,7 @@ func runClipboardMonitor(cfg config) error {
 		return windowsCallError("AddClipboardFormatListener", err)
 	}
 	defer winRemoveClipListener.Call(hwnd)
-	go m.process()
+	go m.go_process()
 	defer m.shutdownProcessor()
 	if err := signalClipboardMonitorReady(); err != nil {
 		return err
@@ -384,7 +387,7 @@ func (m *clipboardMonitor) shutdownProcessor() {
 	}
 }
 
-func clipboardPromptText(stats CleanStats) string {
+func clipboardPromptText(stats rmwm.CleanStats) string {
 	return fmt.Sprintf("Des caractères Unicode à nettoyer ont été détectés dans le presse-papiers.\r\n\r\n"+
 		"Caractères à supprimer : %d\r\nCaractères à remplacer : %d\r\n\r\n"+
 		"Nettoyer ce texte ?\r\n\r\n"+
@@ -399,7 +402,8 @@ func showClipboardMessage(text string, flags uintptr) uintptr {
 	return answer
 }
 
-func (m *clipboardMonitor) process() {
+func (m *clipboardMonitor) go_process() {
+	debug.SetPanicOnFault(true)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(m.finished)

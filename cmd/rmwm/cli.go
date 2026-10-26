@@ -13,12 +13,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	rmwm "github.com/1mm0rt41PC/rmwm-remove-ai-watermarks"
+	"github.com/1mm0rt41PC/rmwm-remove-ai-watermarks/internal/textio"
 )
 
 var version = "0.3.0"
 
 type config struct {
-	CleanOptions
+	rmwm.CleanOptions
 	extensions       string
 	extensionSet     map[string]bool
 	output           string
@@ -55,8 +58,6 @@ type application struct {
 	report    report
 	seen      map[string]bool
 }
-
-func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 
 const helpText = `rmwm - nettoyage Unicode local du texte et des chaînes JSON
 
@@ -114,7 +115,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func runWithClipboard(args []string, stdin io.Reader, stdout, stderr io.Writer, clipboard clipboardOps) int {
-	cfg := config{CleanOptions: CleanOptions{NormalizeSpaces: true, NormalizeDashes: true}}
+	cfg := config{CleanOptions: rmwm.CleanOptions{NormalizeSpaces: true, NormalizeDashes: true}}
 	flags := flag.NewFlagSet("rmwm", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { _, _ = io.WriteString(stderr, helpText) }
@@ -200,7 +201,7 @@ func runWithClipboard(args []string, stdin io.Reader, stdout, stderr io.Writer, 
 	cfg.maxBytes = cfg.maxSizeMiB * 1024 * 1024
 	cfg.NormalizeSpaces = !keepSpaces
 	cfg.NormalizeDashes = !keepDashes
-	cfg.extensionSet, err = parseExtensions(cfg.extensions)
+	cfg.extensionSet, err = textio.ParseExtensions(cfg.extensions)
 	if err != nil {
 		return usageError(err.Error())
 	}
@@ -277,23 +278,6 @@ func interspersedArgs(flags *flag.FlagSet, args []string) ([]string, error) {
 	return append(append(options, "--"), paths...), nil
 }
 
-func parseExtensions(value string) (map[string]bool, error) {
-	result := make(map[string]bool)
-	for _, part := range strings.Split(value, ",") {
-		ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(part), "."))
-		if ext == "" {
-			return nil, errors.New("-ext contient une extension vide")
-		}
-		for _, r := range ext {
-			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
-				return nil, fmt.Errorf("extension invalide dans -ext : %q", part)
-			}
-		}
-		result["."+ext] = true
-	}
-	return result, nil
-}
-
 func (a *application) error(path string, err error) {
 	a.report.Errors++
 	fmt.Fprintf(a.stderr, "rmwm: %q: %v\n", path, err)
@@ -305,18 +289,13 @@ func (a *application) note(format string, args ...any) {
 	}
 }
 
-func (a *application) collect(changed bool, stats CleanStats) {
+func (a *application) collect(changed bool, stats rmwm.CleanStats) {
 	a.report.Scanned++
 	if changed {
 		a.report.Changed++
 	}
 	a.report.Removed += stats.Removed
 	a.report.Replaced += stats.Replaced
-}
-
-var excludedDirectories = map[string]bool{
-	".git": true, ".hg": true, ".svn": true, "node_modules": true,
-	"vendor": true, ".venv": true, "venv": true,
 }
 
 func (a *application) processPath(path string) {
@@ -348,7 +327,7 @@ func (a *application) processPath(path string) {
 			return nil
 		}
 		if entry.IsDir() {
-			if current != root && (a.cfg.noRecursive || excludedDirectories[strings.ToLower(entry.Name())]) {
+			if current != root && (a.cfg.noRecursive || textio.ExcludedDirectory(entry.Name())) {
 				a.report.Skipped++
 				return filepath.SkipDir
 			}
@@ -366,36 +345,14 @@ func (a *application) processPath(path string) {
 	}
 }
 
-func (a *application) clean(data []byte, name string) ([]byte, CleanStats, error) {
-	text, encoding, err := decodeText(data)
-	if err != nil {
-		return nil, CleanStats{}, err
-	}
-	format := a.cfg.format
-	if format == "auto" {
-		format = "text"
-		if strings.EqualFold(filepath.Ext(name), ".json") {
-			format = "json"
-		}
-	}
-	var cleaned string
-	var stats CleanStats
-	if format == "json" {
-		cleaned, stats, err = CleanJSON(text, a.cfg.CleanOptions)
-	} else {
-		cleaned, stats = CleanText(text, a.cfg.CleanOptions)
-	}
-	if err != nil {
-		return nil, CleanStats{}, err
-	}
-	if text == cleaned {
-		return data, stats, nil
-	}
-	return encodeText(cleaned, encoding), stats, nil
+// ************************************************************************************************
+// clean applies library rules through the shared encoding-preserving I/O path.
+func (a *application) clean(data []byte, name string) ([]byte, rmwm.CleanStats, error) {
+	return mock_clean(data, name, a.cfg.format, a.cfg.CleanOptions, rmwm.CleanText, rmwm.CleanJSON)
 }
 
 func (a *application) processStream(stdin io.Reader) {
-	data, err := readLimited(stdin, a.cfg.maxBytes)
+	data, err := textio.ReadLimited(stdin, a.cfg.maxBytes)
 	if err != nil {
 		a.error("stdin", err)
 		return
@@ -414,13 +371,13 @@ func (a *application) processStream(stdin io.Reader) {
 		return
 	}
 	if a.cfg.output != "" && a.cfg.output != "-" {
-		if err = writeNewFile(a.cfg.output, cleaned, 0600); err != nil {
+		if err = textio.WriteNewFile(a.cfg.output, cleaned, 0600); err != nil {
 			a.error(a.cfg.output, err)
 			return
 		}
 		a.report.Written++
 		a.note("[écrit] %s", a.cfg.output)
-	} else if err = writeAll(a.stdout, cleaned); err != nil {
+	} else if err = textio.WriteAll(a.stdout, cleaned); err != nil {
 		a.error("stdout", err)
 	}
 }
@@ -439,17 +396,17 @@ func (a *application) processFile(path string) {
 		return
 	}
 	a.seen[key] = true
-	source, err := readSource(abs, a.cfg.maxBytes)
+	source, err := textio.ReadSource(abs, a.cfg.maxBytes)
 	if err != nil {
 		a.error(path, err)
 		return
 	}
-	cleaned, stats, err := a.clean(source.data, path)
+	cleaned, stats, err := a.clean(source.Data, path)
 	if err != nil {
 		a.error(path, err)
 		return
 	}
-	changed := !bytes.Equal(source.data, cleaned)
+	changed := !bytes.Equal(source.Data, cleaned)
 	a.collect(changed, stats)
 	if a.cfg.check || a.cfg.dryRun {
 		if changed {
@@ -458,7 +415,7 @@ func (a *application) processFile(path string) {
 		return
 	}
 	if a.cfg.output == "-" {
-		if err := writeAll(a.stdout, cleaned); err != nil {
+		if err := textio.WriteAll(a.stdout, cleaned); err != nil {
 			a.error("stdout", err)
 		}
 		return
@@ -471,7 +428,7 @@ func (a *application) processFile(path string) {
 		}
 		equalPath := out == abs || runtime.GOOS == "windows" && strings.EqualFold(out, abs)
 		if !equalPath {
-			if err := writeNewFileProtected(out, cleaned, source.info.Mode().Perm(), source.path); err != nil {
+			if err := textio.WriteNewFileProtected(out, cleaned, source.Info.Mode().Perm(), source.Path); err != nil {
 				a.error(a.cfg.output, err)
 				return
 			}
@@ -483,7 +440,7 @@ func (a *application) processFile(path string) {
 	if !changed {
 		return // Preserve timestamps and avoid backups for unchanged files.
 	}
-	backup, warning, err := replaceSource(source, cleaned, !a.cfg.noBackup)
+	backup, warning, err := textio.ReplaceSource(source, cleaned, !a.cfg.noBackup)
 	if err != nil {
 		a.error(path, err)
 		return
